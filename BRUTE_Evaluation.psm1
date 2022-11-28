@@ -104,10 +104,10 @@ function Start-BruteEvaluation {
 function Stop-BruteEvaluation {
     [CmdletBinding()]
     param(
-        [Nullable[string]]$Evaluation = $null,
+        [AllowNull()][string]$Evaluation = $null,
         [Nullable[float]]$ManualScore = $null,
         [Nullable[float]]$Penalty = $null,
-        [Nullable[string]]$Note = $null,
+        [AllowNull()][string]$Note = $null,
         [string]$Dir = $script:LastEvalDir
     )
 
