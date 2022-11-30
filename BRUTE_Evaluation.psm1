@@ -28,7 +28,7 @@ $script:PARALLELS = $script:PARALLEL_NAMES | % {$script:TABLE.GetParallel($_)}
 # render the AE tables
 foreach ($p in $script:PARALLELS) {
     if (@($script:PARALLELS).Count -gt 1) {
-        Write-Host "PARALLEL '$($p.Name)':"
+        Write-Host "`nPARALLEL '$($p.Name)':"
     }
     $p.FormatTable() | Out-Host
 }
@@ -89,11 +89,13 @@ function Start-BruteEvaluation {
     $script:LastEvalDir = $Target
 
     $p = $Evaluation.Parameters
+    Write-Host "AE URL: $($PSStyle.FormatHyperlink($Evaluation.AeOutputUrl, $Evaluation.AeOutputUrl))"
+    Write-Host "Evaluation URL: $($PSStyle.FormatHyperlink($Url, $Url))"
+    Write-Host ""
     Write-Host "USERNAME: $UserName"
     if ($p.ae_score) {Write-Host "AE: $($p.ae_score)"}
     if ($p.penalty) {Write-Host "PENALTY: $($p.penalty)"}
     if ($p.manual_score) {Write-Host "MANUAL: $($p.manual_score)"}
-    Write-Host "AE URL: $($PSStyle.FormatHyperlink($Evaluation.AeOutputUrl, $Evaluation.AeOutputUrl))"
 
     Set-Content "${Target}-URL.txt" -NoNewline -Value $Evaluation.Url
 
@@ -104,11 +106,11 @@ function Start-BruteEvaluation {
 function Stop-BruteEvaluation {
     [CmdletBinding()]
     param(
-        [AllowNull()][string]$Evaluation = $null,
+        $Evaluation = $null,
         [Nullable[float]]$ManualScore = $null,
         [Nullable[float]]$Penalty = $null,
-        [AllowNull()][string]$Note = $null,
-        [string]$Dir = $script:LastEvalDir
+        $Note = $null,
+        $Dir = $script:LastEvalDir
     )
 
     begin {
