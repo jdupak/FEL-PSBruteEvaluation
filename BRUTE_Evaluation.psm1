@@ -3,62 +3,130 @@ using module BRUTE
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-
-#############################################################################
-# set these values manually:
-$script:COURSE_URL = "https://cw.felk.cvut.cz/brute/teacher/course/<...>/<...>"
-$script:PARALLEL_NAMES = @("parallel-name")
-# this function should open your preferred file manager / IDE
-function OpenDirectory($Dir) {explorer $Dir}
-#############################################################################
-
-
-$script:TABLE = while ($true) {
-    try {
-        Get-BruteCourseTable $script:COURSE_URL
-        break
-    } catch [InvalidBruteSSOTokenException] {
-        Write-Host ($PSStyle.Foreground.BrightRed + $_ + $PSStyle.Reset)
-        Set-BruteSSOToken (Read-Host "Enter a new SSO token" -MaskInput)
-    }
-}
-$script:PARALLELS = $script:PARALLEL_NAMES | % {$script:TABLE.GetParallel($_)}
-
-
-# render the AE tables
-foreach ($p in $script:PARALLELS) {
-    if (@($script:PARALLELS).Count -gt 1) {
-        Write-Host "`nPARALLEL '$($p.Name)':"
-    }
-    $p.FormatTable() | Out-Host
-}
-
-
 # path to the last created evaluation directory
 $script:LastEvalDir = $null
 
+# set by Set-BruteEvaluationContext
+[BruteEvaluationContext]$script:EVAL_CONTEXT = $null
+
+function Get-Context {
+    if (-not $script:EVAL_CONTEXT) {
+        throw "Configure the evaluation parameters using 'Set-BruteEvaluationContext' before calling other functions."
+    }
+    return $script:EVAL_CONTEXT
+}
+
+
+class BruteEvaluationContext {
+    [string]$CourseUrl
+    [string[]]$ParallelNames
+    [scriptblock]$EvalDirPathSb
+    [scriptblock]$OpenEvalDirSb
+
+    [BruteCourseTable]$Table
+    [BruteParallel[]]$Parallels
+
+    BruteEvaluationContext([string]$CourseUrl, [string[]]$ParallelNames,
+            [scriptblock]$GetEvaluationDirectoryPathSb, [scriptblock]$OpenEvaluationDirectorySb) {
+        $this.CourseUrl = $CourseUrl
+        $this.ParallelNames = $ParallelNames
+        $this.EvalDirPathSb = $GetEvaluationDirectoryPathSb
+        $this.OpenEvalDirSb = $OpenEvaluationDirectorySb
+
+        $this.Refresh()
+    }
+
+    Refresh() {
+        $this.Table = Get-BruteCourseTable $this.CourseUrl
+        $this.Parallels = foreach ($pn in $this.ParallelNames) {$this.Table.GetParallel($pn)}
+    }
+
+    RenderTable() {
+        foreach ($p in $this.Parallels) {
+            if (@($this.Parallels).Count -gt 1) {
+                Write-Host "`nPARALLEL '$($p.Name)':"
+            }
+            $p.FormatTable() | Out-Host
+        }
+    }
+
+    [BruteEvaluation] GetEvaluation([string]$AssignmentName, [string]$UserName) {
+        $Student = foreach ($p in $this.Parallels) {
+            try {$p.GetStudent($UserName); break} catch {}
+        }
+        if (-not $Student) {
+            throw "Student '$UserName' not found in parallels " + (($this.Parallels | % {"'" + $_.Name + "'"}) -join ", ")  + "."
+        }
+
+        $Url = $Student.GetSubmissionURL($AssignmentName)
+        if (-not $Url) {
+            throw "Student '$UserName' did not submit anything yet."
+        }
+        return Get-BruteEvaluation $Url
+    }
+
+    [string] GetEvaluationDirectory([string]$AssignmentName, [string]$UserName) {
+        return & $this.EvalDirPathSb $AssignmentName $UserName
+    }
+
+    OpenEvaluationDirectory([string]$Path) {
+        & $this.OpenEvalDirSb $Path
+    }
+}
 
 class _AssignmentName : System.Management.Automation.IValidateSetValuesGenerator {
     [string[]] GetValidValues() {
-        return $script:PARALLELS.GetAssignmentNames()
+        return (Get-Context).Parallels.GetAssignmentNames()
     }
 }
 
 class _StudentName : System.Management.Automation.IValidateSetValuesGenerator {
     [string[]] GetValidValues() {
-        return $script:PARALLELS.GetStudents() | % UserName
+        return (Get-Context).Parallels.GetStudents() | % UserName
     }
 }
 
 
-function New-TemporaryPath($Extension = "", $Prefix = "") {
-    $Tmp = if ($IsWindows) {$env:TEMP} else {"/tmp"}
-    return Join-Path $Tmp "$Prefix$(New-Guid)$Extension"
+function Set-BruteEvaluationContext($CourseUrl, $ParallelNames, $GetEvaluationDirectoryPathSb, $OpenEvaluationDirectorySb) {
+    $script:EVAL_CONTEXT = [BruteEvaluationContext]::new($CourseUrl, $ParallelNames, $GetEvaluationDirectoryPathSb, $OpenEvaluationDirectorySb)
 }
-
 
 function Get-BruteEvaluationDir {
     return $script:LastEvalDir
+}
+
+function Show-BruteCourseTable {
+    [CmdletBinding()]
+    param([switch]$NoRefresh)
+
+    $Context = Get-Context
+    if (-not $NoRefresh) {
+        $Context.Refresh()
+    }
+    $Context.RenderTable()
+}
+
+function Show-BruteEvaluation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidateSet([_AssignmentName])][string]$AssignmentName,
+        [Parameter(Mandatory)][ValidateSet([_StudentName])][string]$UserName
+    )
+    
+    $Context = Get-Context
+    $Evaluation = $Context.GetEvaluation($AssignmentName, $UserName)
+    $p = $Evaluation.Parameters
+    Write-Host "AE URL: $($PSStyle.FormatHyperlink($Evaluation.AeOutputUrl, $Evaluation.AeOutputUrl))"
+    Write-Host "Evaluation URL: $($PSStyle.FormatHyperlink($Evaluation.SubmissionUrl, $Evaluation.SubmissionUrl))"
+    Write-Host ""
+    Write-Host "USERNAME: $UserName"
+    if ($p.ae_score) {Write-Host "AE: $($p.ae_score)"}
+    if ($p.penalty) {Write-Host "PENALTY: $($p.penalty)"}
+    if ($p.manual_score) {Write-Host "MANUAL: $($p.manual_score)"}
+    if ($p.evaluation) {
+        Write-Host "EVALUATION:"
+        Write-Host $p.evaluation
+    }
 }
 
 function Start-BruteEvaluation {
@@ -68,20 +136,14 @@ function Start-BruteEvaluation {
         [Parameter(Mandatory)][ValidateSet([_StudentName])][string]$UserName
     )
     
-    $Student = foreach ($p in $script:PARALLELS) {
-        try {$p.GetStudent($UserName); break} catch {}
-    }
-    if (-not $Student) {
-        throw "Student '$UserName' not found in parallels " + (($script:PARALLELS | % {"'" + $_.Name + "'"}) -join ", ")  + "."
+    $Context = Get-Context
+    $Evaluation = $Context.GetEvaluation($AssignmentName, $UserName)
+    
+    $Target = $Context.GetEvaluationDirectory($AssignmentName, $UserName)
+    if (Test-Path $Target) {
+        throw "Target directory '$Target' already exists, is there a non-finished previous evaluation?"
     }
 
-    $Url = $Student.GetSubmissionURL($AssignmentName)
-    if (-not $Url) {
-        throw "Student '$UserName' did not submit anything yet."
-    }
-    $Evaluation = Get-BruteEvaluation $Url
-
-    $Target = New-TemporaryPath -Prefix "BRUTE-$AssignmentName-$UserName-"
     Get-BruteUpload $Evaluation $Target
     # this does not work, for some reason; it might be the same reason why you cannot view
     #  AE results of your assignment as a student when you're also logged in as a teacher
@@ -90,7 +152,7 @@ function Start-BruteEvaluation {
 
     $p = $Evaluation.Parameters
     Write-Host "AE URL: $($PSStyle.FormatHyperlink($Evaluation.AeOutputUrl, $Evaluation.AeOutputUrl))"
-    Write-Host "Evaluation URL: $($PSStyle.FormatHyperlink($Url, $Url))"
+    Write-Host "Evaluation URL: $($PSStyle.FormatHyperlink($Evaluation.SubmissionUrl, $Evaluation.SubmissionUrl))"
     Write-Host ""
     Write-Host "USERNAME: $UserName"
     if ($p.ae_score) {Write-Host "AE: $($p.ae_score)"}
@@ -99,8 +161,7 @@ function Start-BruteEvaluation {
 
     Set-Content "${Target}-URL.txt" -NoNewline -Value $Evaluation.Url
 
-    pause
-    OpenDirectory $Target
+    $Context.OpenEvaluationDirectory($Target)
 }
 
 function Stop-BruteEvaluation {
@@ -119,18 +180,19 @@ function Stop-BruteEvaluation {
         }
 
         $Url = cat "$Dir-URL.txt"
-        rm "$Dir-URL.txt"
-        rm -Recurse $Dir
-        $script:LastEvalDir = $null
-
         if (-not $Evaluation -and -not $Note -and -not $ManualScore -and -not $Penalty) {
-            Write-Host "Assignment directory deleted, no evaluation submitted."
-            return # do not submit, no arguments explicitly passed
+            Write-Host "No evaluation submitted, deleting assignment directory..."
         } else {
             New-BruteEvaluation $Url -Evaluation $Evaluation -Note $Note -ManualScore $ManualScore -Penalty $Penalty
         }
+
+        rm -Recurse $Dir
+        rm "$Dir-URL.txt"
+        $script:LastEvalDir = $null
     }
 }
 
+New-Alias brutet Show-BruteCourseTable
+New-Alias bruteg Show-BruteEvaluation
 New-Alias brutes Start-BruteEvaluation
 New-Alias brutee Stop-BruteEvaluation
