@@ -3,8 +3,8 @@ using module BRUTE
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# path to the last created evaluation directory
-$script:LastEvalDir = $null
+# info about the last created evaluation directory
+$script:LastEval = $null
 
 # set by Set-BruteEvaluationContext
 [BruteEvaluationContext]$script:EVAL_CONTEXT = $null
@@ -91,8 +91,11 @@ function Set-BruteEvaluationContext($CourseUrl, $ParallelNames, $GetEvaluationDi
     $script:EVAL_CONTEXT = [BruteEvaluationContext]::new($CourseUrl, $ParallelNames, $GetEvaluationDirectoryPathSb, $OpenEvaluationDirectorySb)
 }
 
-function Get-BruteEvaluationDir {
-    return $script:LastEvalDir
+function Get-BruteEvaluationInformation {
+    if (-not $script:LastEval) {
+        throw "No active evaluation."
+    }
+    return $script:LastEval
 }
 
 function Show-BruteCourseTable {
@@ -141,14 +144,21 @@ function Start-BruteEvaluation {
     
     $Target = $Context.GetEvaluationDirectory($AssignmentName, $UserName)
     if (Test-Path $Target) {
-        throw "Target directory '$Target' already exists, is there a non-finished previous evaluation?"
+        throw "Target directory '$Target' already exists, is there an unfinished previous evaluation?"
     }
 
     Get-BruteUpload $Evaluation $Target
     # this does not work, for some reason; it might be the same reason why you cannot view
     #  AE results of your assignment as a student when you're also logged in as a teacher
     #Get-BruteAeOutput $Evaluation (Join-Path $Target "__AE_RESULT.html")
-    $script:LastEvalDir = $Target
+    
+    # TODO: add AssignmentName to BruteEvaluation
+    $script:LastEval = @{
+        Directory = $Target
+        AssignmentName = $AssignmentName
+        StudentName = $UserName
+        Evaluation = $Evaluation
+    }
 
     $p = $Evaluation.Parameters
     Write-Host "AE URL: $($PSStyle.FormatHyperlink($Evaluation.AeOutputUrl, $Evaluation.AeOutputUrl))"
@@ -171,24 +181,27 @@ function Stop-BruteEvaluation {
         [Nullable[float]]$ManualScore = $null,
         [Nullable[float]]$Penalty = $null,
         $Note = $null,
-        $Dir = $script:LastEvalDir
+        $Dir = $null
     )
 
     begin {
+        $UsingLastEval = -not $Dir
         if (-not $Dir) {
-            throw "No evaluation directory set."
+            if ($script:LastEval) {$Dir = $script:LastEval.Directory}
+            else {throw "No evaluation directory set."}
         }
 
         $Url = cat "$Dir-URL.txt"
         if (-not $Evaluation -and -not $Note -and -not $ManualScore -and -not $Penalty) {
             Write-Host "No evaluation submitted, deleting assignment directory..."
         } else {
-            New-BruteEvaluation $Url -Evaluation $Evaluation -Note $Note -ManualScore $ManualScore -Penalty $Penalty
+            $Arg1 = if ($UsingLastEval) {$script:LastEval.Evaluation} else {$Url}
+            New-BruteEvaluation $Arg1 -Evaluation $Evaluation -Note $Note -ManualScore $ManualScore -Penalty $Penalty
         }
 
         rm -Recurse $Dir
         rm "$Dir-URL.txt"
-        $script:LastEvalDir = $null
+        $script:LastEval = $null
     }
 }
 
